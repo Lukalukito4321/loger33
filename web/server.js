@@ -2,31 +2,24 @@ import 'dotenv/config';
 import express from 'express';
 import session from 'express-session';
 import fetch from 'node-fetch';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { ensureGuildRow, getGuildSettings, updateGuildSettings } from './settings.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// ===== ENV =====
 const SESSION_SECRET = process.env.FLASK_SECRET_KEY || 'dev';
-const CLIENT_ID = process.env.DISCORD_CLIENT_ID || '';
-const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || '';
-const REDIRECT_URI = (process.env.DISCORD_REDIRECT_URI || '').trim(); // MUST be full URL to /callback
-const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || '';
-const BOT_API_KEY = process.env.BOT_API_KEY || '';
+const CLIENT_ID = (process.env.DISCORD_CLIENT_ID || '').trim();
+const CLIENT_SECRET = (process.env.DISCORD_CLIENT_SECRET || '').trim();
+const REDIRECT_URI = (process.env.DISCORD_REDIRECT_URI || '').trim(); // full https://domain/callback
+const DISCORD_BOT_TOKEN = (process.env.DISCORD_BOT_TOKEN || '').trim();
+const BOT_API_KEY = (process.env.BOT_API_KEY || '').trim();
 
 const DISCORD_API = 'https://discord.com/api';
 const OAUTH_SCOPE = 'identify guilds';
 
-// ===== Middleware =====
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// IMPORTANT for Railway/HTTPS reverse proxy so secure cookies work
+// Railway/HTTPS proxy support so cookies persist after OAuth redirect
 app.set('trust proxy', 1);
 
 app.use(session({
@@ -36,17 +29,26 @@ app.use(session({
   cookie: {
     httpOnly: true,
     sameSite: 'lax',
-    secure: true, // Railway domain is HTTPS. If you run locally on http, it still usually works for most pages, but OAuth in prod needs this.
+    secure: true
   }
 }));
 
 function page(title, body, loggedIn = false) {
+  const rightControls = loggedIn
+    ? `
+      <span class="pill"><i class="bi bi-check-circle-fill" style="color:rgba(34,197,94,.95)"></i><span class="small">Signed in</span></span>
+      <a class="btn btn-outline-light btn-sm" href="/logout"><i class="bi bi-box-arrow-right me-1"></i>Logout</a>
+    `
+    : `
+      <span class="pill"><i class="bi bi-person-circle"></i><span class="small">Guest</span></span>
+    `;
+
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>${title}</title>
+  <title>${escapeHtml(title)}</title>
 
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
@@ -73,60 +75,24 @@ function page(title, body, loggedIn = false) {
         linear-gradient(180deg, var(--bg0), var(--bg1));
     }
 
-    .app-shell{
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 28px 14px 48px;
-    }
+    .app-shell{ max-width: 1100px; margin: 0 auto; padding: 28px 14px 48px; }
+    .topbar{ display:flex; align-items:center; justify-content:space-between; gap: 12px; margin-bottom: 18px; }
 
-    .topbar{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap: 12px;
-      margin-bottom: 18px;
-    }
-
-    .brand{
-      display:flex;
-      align-items:center;
-      gap: 12px;
-    }
+    .brand{ display:flex; align-items:center; gap: 12px; }
     .brand .logo{
-      width: 44px;
-      height: 44px;
-      border-radius: 14px;
+      width: 44px; height: 44px; border-radius: 14px;
       background: linear-gradient(135deg, rgba(91,140,255,.95), rgba(34,197,94,.65));
       box-shadow: 0 10px 30px rgba(91,140,255,.25);
-      display:flex;
-      align-items:center;
-      justify-content:center;
+      display:flex; align-items:center; justify-content:center;
       border: 1px solid rgba(255,255,255,.12);
     }
     .brand .logo i{ font-size: 20px; color: rgba(255,255,255,.95); }
-
-    .brand h1{
-      font-size: 18px;
-      margin: 0;
-      letter-spacing: .2px;
-      font-weight: 700;
-      line-height: 1.1;
-    }
-    .brand .subtitle{
-      font-size: 13px;
-      color: var(--muted);
-      margin-top: 2px;
-    }
+    .brand h1{ font-size: 18px; margin: 0; letter-spacing: .2px; font-weight: 700; line-height: 1.1; }
+    .brand .subtitle{ font-size: 13px; color: var(--muted); margin-top: 2px; }
 
     .pill{
-      display:inline-flex;
-      align-items:center;
-      gap: 8px;
-      padding: 8px 12px;
-      border-radius: 999px;
-      background: rgba(255,255,255,.06);
-      border: 1px solid var(--stroke);
-      backdrop-filter: blur(10px);
+      display:inline-flex; align-items:center; gap: 8px; padding: 8px 12px; border-radius: 999px;
+      background: rgba(255,255,255,.06); border: 1px solid var(--stroke); backdrop-filter: blur(10px);
     }
 
     .card{
@@ -145,7 +111,6 @@ function page(title, body, loggedIn = false) {
     }
 
     .muted{ color: var(--muted); }
-
     a{ color: #9bbcff; text-decoration: none; }
     a:hover{ text-decoration: underline; }
 
@@ -202,39 +167,17 @@ function page(title, body, loggedIn = false) {
       border-color: rgba(91,140,255,.55);
     }
 
-    .form-check-input{
-      background-color: rgba(15,26,51,.90);
-      border-color: rgba(255,255,255,.22);
-    }
-    .form-switch .form-check-input{
-      width: 44px;
-      height: 22px;
-      border-radius: 999px;
-    }
-    .form-switch .form-check-input:checked{
-      background-color: rgba(91,140,255,.85);
-      border-color: rgba(91,140,255,.85);
-    }
+    .form-check-input{ background-color: rgba(15,26,51,.90); border-color: rgba(255,255,255,.22); }
+    .form-switch .form-check-input{ width: 44px; height: 22px; border-radius: 999px; }
+    .form-switch .form-check-input:checked{ background-color: rgba(91,140,255,.85); border-color: rgba(91,140,255,.85); }
 
-    .divider{
-      height:1px;
-      background: rgba(255,255,255,.10);
-      margin: 14px 0;
-    }
-
-    .hint{
-      font-size: 12px;
-      color: rgba(233,238,252,.65);
-    }
-
+    .divider{ height:1px; background: rgba(255,255,255,.10); margin: 14px 0; }
+    .hint{ font-size: 12px; color: rgba(233,238,252,.65); }
     .kbd{
-      padding: 2px 7px;
-      border-radius: 8px;
-      background: rgba(255,255,255,.06);
-      border: 1px solid rgba(255,255,255,.12);
+      padding: 2px 7px; border-radius: 8px;
+      background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      font-size: 12px;
-      color: rgba(233,238,252,.85);
+      font-size: 12px; color: rgba(233,238,252,.85);
     }
 
     .toastish{
@@ -267,12 +210,7 @@ function page(title, body, loggedIn = false) {
       </div>
 
       <div class="d-flex align-items-center gap-2">
-        ${loggedIn ? `
-          <span class="pill"><i class="bi bi-check-circle-fill" style="color:rgba(34,197,94,.95)"></i><span class="small">Signed in</span></span>
-          <a class="btn btn-outline-light btn-sm" href="/logout"><i class="bi bi-box-arrow-right me-1"></i>Logout</a>
-         : 
-          <span class="pill"><i class="bi bi-person-circle"></i><span class="small">Guest</span></span>
-        `}
+        ${rightControls}
       </div>
     </div>
 
@@ -309,8 +247,8 @@ function page(title, body, loggedIn = false) {
 }
 
 async function discordGet(token, apiPath) {
-  const r = await fetch(${DISCORD_API}${apiPath}, {
-    headers: { Authorization: Bearer ${token} }
+  const r = await fetch(`${DISCORD_API}${apiPath}`, {
+    headers: { Authorization: `Bearer ${token}` }
   });
   let data;
   try { data = await r.json(); } catch { data = { error: 'bad_json' }; }
@@ -350,10 +288,7 @@ app.get('/', (req, res) => {
             <li>Load channels from your server to avoid copy/paste</li>
           </ul>
           <div class="divider"></div>
-          <div class="hint">
-            Tip: check <span class="kbd">DISCORD_REDIRECT_URI</span> is exactly
-            <span class="kbd">https://YOURDOMAIN/callback</span> (no extra slash).
-          </div>
+          <div class="hint">Tip: <span class="kbd">DISCORD_REDIRECT_URI</span> must be <span class="kbd">https://YOURDOMAIN/callback</span></div>
         </div>
         <div class="col-lg-4 text-lg-end">
           <a class="btn btn-primary w-100" href="/login"><i class="bi bi-discord me-1"></i>Login with Discord</a>
@@ -366,17 +301,16 @@ app.get('/', (req, res) => {
 
 app.get('/login', (req, res) => {
   if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI) {
-    return res.send(page(
-      'Config error',
-      <div class='alert alert-danger'>Missing DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET / DISCORD_REDIRECT_URI</div>
+    return res.send(page('Config error',
+      `<div class='alert alert-danger'>Missing DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET / DISCORD_REDIRECT_URI</div>`
     ));
   }
 
-  const url = ${DISCORD_API}/oauth2/authorize
-    + ?client_id=${encodeURIComponent(CLIENT_ID)}
-    + &redirect_uri=${encodeURIComponent(REDIRECT_URI)}
-    + &response_type=code
-    + &scope=${encodeURIComponent(OAUTH_SCOPE)};
+  const url = `${DISCORD_API}/oauth2/authorize`
+    + `?client_id=${encodeURIComponent(CLIENT_ID)}`
+    + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
+    + `&response_type=code`
+    + `&scope=${encodeURIComponent(OAUTH_SCOPE)}`;
 
   res.redirect(url);
 });
@@ -387,49 +321,30 @@ app.get('/logout', (req, res) => {
 
 app.get('/callback', async (req, res) => {
   const code = req.query.code;
-  if (!code) {
-    return res.send(page('OAuth error', <div class='alert alert-danger'>No code returned from Discord.</div>));
-  }
+  if (!code) return res.send(page('OAuth error', `<div class='alert alert-danger'>No code returned from Discord.</div>`));
 
-  // Helpful debug in Railway logs (safe; does not print secrets)
-  console.log('[callback] got code:', String(code).slice(0, 6) + '...');
-  console.log('[callback] redirect_uri:', REDIRECT_URI);
-
-  let tokenResp;
-  try {
-    tokenResp = await fetch(${DISCORD_API}/oauth2/token, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET,
-        grant_type: 'authorization_code',
-        code: String(code),
-        redirect_uri: REDIRECT_URI,
-        scope: OAUTH_SCOPE
-      })
-    });
-  } catch (e) {
-    console.log('[callback] token fetch failed:', e?.message || e);
-    return res.send(page('OAuth failed', <div class='alert alert-danger'>OAuth failed (network error).</div>));
-  }
+  const tokenResp = await fetch(`${DISCORD_API}/oauth2/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      grant_type: 'authorization_code',
+      code: String(code),
+      redirect_uri: REDIRECT_URI,
+      scope: OAUTH_SCOPE
+    })
+  });
 
   const token = await tokenResp.json().catch(() => ({}));
-
   if (!token?.access_token) {
-    console.log('[callback] token exchange failed:', tokenResp.status, token);
-    return res.send(page(
-      'OAuth failed',
-      `<div class='alert alert-danger'>
-        OAuth failed (status ${tokenResp.status}): 
-        <pre>${escapeHtml(JSON.stringify(token, null, 2))}</pre>
-        <div class="hint">Most common: redirect_uri mismatch. Ensure REDIRECT URI in Railway + Discord Portal are identical.</div>
-      </div>`
+    return res.send(page('OAuth failed',
+      `<div class='alert alert-danger'>OAuth failed (status ${tokenResp.status}): <pre>${escapeHtml(JSON.stringify(token, null, 2))}</pre></div>`
     ));
   }
 
   req.session.access_token = token.access_token;
-  return res.redirect('/guilds');
+  res.redirect('/guilds');
 });
 
 app.get('/guilds', async (req, res) => {
@@ -437,7 +352,7 @@ app.get('/guilds', async (req, res) => {
 
   const { data, status } = await discordGet(req.session.access_token, '/users/@me/guilds');
   if (status !== 200 || !Array.isArray(data)) {
-    return res.status(500).send(<h3>Failed to load guilds</h3><pre>Discord API error ${status}: ${escapeHtml(JSON.stringify(data, null, 2))}</pre>);
+    return res.status(500).send(`<h3>Failed to load guilds</h3><pre>Discord API error ${status}: ${escapeHtml(JSON.stringify(data, null, 2))}</pre>`);
   }
 
   const { manageable, others } = manageableGuilds(data);
@@ -446,7 +361,7 @@ app.get('/guilds', async (req, res) => {
   if (!clientId) return res.status(500).send('<h3>Missing BOT_CLIENT_ID (Application ID) in env</h3>');
 
   const perms = process.env.BOT_PERMISSIONS || '8';
-  const addBotUrl = https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(clientId)}&scope=bot%20applications.commands&permissions=${encodeURIComponent(perms)};
+  const addBotUrl = `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(clientId)}&scope=bot%20applications.commands&permissions=${encodeURIComponent(perms)}`;
 
   let manageableHtml = '';
   for (const g of manageable) {
@@ -460,11 +375,11 @@ app.get('/guilds', async (req, res) => {
       </a>`;
   }
   if (!manageableHtml) {
-    manageableHtml = <div class="text-muted">No manageable servers found. You need <b>Manage Server</b> permission.</div>;
+    manageableHtml = `<div class="text-muted">No manageable servers found. You need <b>Manage Server</b> permission.</div>`;
   }
 
   let othersHtml = '';
-  for (const g of others) othersHtml += <li>${escapeHtml(g.name || 'Unknown')}</li>;
+  for (const g of others) othersHtml += `<li>${escapeHtml(g.name || 'Unknown')}</li>`;
   if (!othersHtml) othersHtml = '<li>None</li>';
 
   const body = `
@@ -494,7 +409,6 @@ app.get('/guilds', async (req, res) => {
 app.get('/dashboard/:guildId/channels', async (req, res) => {
   if (!req.session.access_token) return res.sendStatus(401);
 
-  // Verify user can manage this guild
   const { data, status } = await discordGet(req.session.access_token, '/users/@me/guilds');
   if (status !== 200 || !Array.isArray(data)) return res.json([]);
 
@@ -504,17 +418,16 @@ app.get('/dashboard/:guildId/channels', async (req, res) => {
 
   if (!DISCORD_BOT_TOKEN) return res.json([]);
 
-  const r = await fetch(${DISCORD_API}/guilds/${encodeURIComponent(req.params.guildId)}/channels, {
-    headers: { Authorization: Bot ${DISCORD_BOT_TOKEN} }
+  const r = await fetch(`${DISCORD_API}/guilds/${encodeURIComponent(req.params.guildId)}/channels`, {
+    headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}` }
   });
   if (r.status !== 200) return res.json([]);
 
   const chans = await r.json().catch(() => []);
   const text = Array.isArray(chans)
-    ? chans
-        .filter(c => c?.type === 0)
-        .map(c => ({ id: String(c.id), name: String(c.name) }))
-        .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
+    ? chans.filter(c => c?.type === 0)
+      .map(c => ({ id: String(c.id), name: String(c.name) }))
+      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
     : [];
   res.json(text);
 });
@@ -523,8 +436,6 @@ app.all('/dashboard/:guildId', async (req, res) => {
   if (!req.session.access_token) return res.redirect('/login');
 
   const guildId = String(req.params.guildId);
-
-  // ensure row exists
   await ensureGuildRow(guildId);
 
   if (req.method === 'POST') {
@@ -542,7 +453,7 @@ app.all('/dashboard/:guildId', async (req, res) => {
       log_timeout: b('log_timeout'),
     });
 
-    return res.redirect(/dashboard/${encodeURIComponent(guildId)}?saved=1);
+    return res.redirect(`/dashboard/${encodeURIComponent(guildId)}?saved=1`);
   }
 
   const current = await getGuildSettings(guildId);
@@ -585,7 +496,6 @@ app.all('/dashboard/:guildId', async (req, res) => {
   </div>
 
 <script>
-  // toast if saved=1
   const params = new URLSearchParams(window.location.search);
   if (params.get('saved') === '1') window.toast('Saved', 'Your settings were updated.', 'ok');
 
@@ -621,7 +531,6 @@ app.all('/dashboard/:guildId', async (req, res) => {
   res.send(page('Dashboard', body, true));
 });
 
-// API endpoint for bot (same shape as Python /api/settings/<guild_id>)
 app.get('/api/settings/:guildId', async (req, res) => {
   if (req.get('X-API-KEY') !== BOT_API_KEY) return res.sendStatus(401);
 
