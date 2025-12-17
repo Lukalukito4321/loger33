@@ -20,7 +20,7 @@ const __dirname = path.dirname(__filename);
 const TOKEN = process.env.DISCORD_TOKEN;
 const DEFAULT_LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID ? String(process.env.LOG_CHANNEL_ID).trim() : '';
 const GUILD_ID = (process.env.GUILD_ID || '').trim();
-const DASHBOARD_URL = process.env.DASHBOARD_URL || 'http://127.0.0.1:5000/guilds';
+const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://loggerbyshavgula.up.railway.app/';
 
 if (!TOKEN) throw new Error('DISCORD_TOKEN missing in .env');
 
