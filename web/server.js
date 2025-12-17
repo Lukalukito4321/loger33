@@ -11,27 +11,36 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
+// ===== ENV =====
 const SESSION_SECRET = process.env.FLASK_SECRET_KEY || 'dev';
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || '';
-const REDIRECT_URI = process.env.DISCORD_REDIRECT_URI || ''; // MUST be full URL to /callback in this version
+const REDIRECT_URI = (process.env.DISCORD_REDIRECT_URI || '').trim(); // MUST be full URL to /callback
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || '';
 const BOT_API_KEY = process.env.BOT_API_KEY || '';
 
 const DISCORD_API = 'https://discord.com/api';
 const OAUTH_SCOPE = 'identify guilds';
 
+// ===== Middleware =====
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+
+// IMPORTANT for Railway/HTTPS reverse proxy so secure cookies work
+app.set('trust proxy', 1);
 
 app.use(session({
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true }
+  cookie: {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: true, // Railway domain is HTTPS. If you run locally on http, it still usually works for most pages, but OAuth in prod needs this.
+  }
 }));
 
-function page(title, body, loggedIn=false) {
+function page(title, body, loggedIn = false) {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -261,7 +270,7 @@ function page(title, body, loggedIn=false) {
         ${loggedIn ? `
           <span class="pill"><i class="bi bi-check-circle-fill" style="color:rgba(34,197,94,.95)"></i><span class="small">Signed in</span></span>
           <a class="btn btn-outline-light btn-sm" href="/logout"><i class="bi bi-box-arrow-right me-1"></i>Logout</a>
-        ` : `
+         : 
           <span class="pill"><i class="bi bi-person-circle"></i><span class="small">Guest</span></span>
         `}
       </div>
@@ -299,10 +308,9 @@ function page(title, body, loggedIn=false) {
 </html>`;
 }
 
-
-async function discordGet(token, path) {
-  const r = await fetch(`${DISCORD_API}${path}`, {
-    headers: { Authorization: `Bearer ${token}` }
+async function discordGet(token, apiPath) {
+  const r = await fetch(${DISCORD_API}${apiPath}, {
+    headers: { Authorization: Bearer ${token} }
   });
   let data;
   try { data = await r.json(); } catch { data = { error: 'bad_json' }; }
@@ -342,7 +350,10 @@ app.get('/', (req, res) => {
             <li>Load channels from your server to avoid copy/paste</li>
           </ul>
           <div class="divider"></div>
-          <div class="hint">Tip: If OAuth fails, double-check <span class="kbd"></div>
+          <div class="hint">
+            Tip: check <span class="kbd">DISCORD_REDIRECT_URI</span> is exactly
+            <span class="kbd">https://YOURDOMAIN/callback</span> (no extra slash).
+          </div>
         </div>
         <div class="col-lg-4 text-lg-end">
           <a class="btn btn-primary w-100" href="/login"><i class="bi bi-discord me-1"></i>Login with Discord</a>
@@ -355,13 +366,18 @@ app.get('/', (req, res) => {
 
 app.get('/login', (req, res) => {
   if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI) {
-    return res.send(page('Config error', `<div class='alert alert-danger'>Missing DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET / DISCORD_REDIRECT_URI</div>`));
+    return res.send(page(
+      'Config error',
+      <div class='alert alert-danger'>Missing DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET / DISCORD_REDIRECT_URI</div>
+    ));
   }
-  const url = `${DISCORD_API}/oauth2/authorize`
-    + `?client_id=${encodeURIComponent(CLIENT_ID)}`
-    + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
-    + `&response_type=code`
-    + `&scope=${encodeURIComponent(OAUTH_SCOPE)}`;
+
+  const url = ${DISCORD_API}/oauth2/authorize
+    + ?client_id=${encodeURIComponent(CLIENT_ID)}
+    + &redirect_uri=${encodeURIComponent(REDIRECT_URI)}
+    + &response_type=code
+    + &scope=${encodeURIComponent(OAUTH_SCOPE)};
+
   res.redirect(url);
 });
 
@@ -371,28 +387,49 @@ app.get('/logout', (req, res) => {
 
 app.get('/callback', async (req, res) => {
   const code = req.query.code;
-  if (!code) return res.send(page('OAuth error', `<div class='alert alert-danger'>No code returned from Discord.</div>`));
+  if (!code) {
+    return res.send(page('OAuth error', <div class='alert alert-danger'>No code returned from Discord.</div>));
+  }
 
-  const tokenResp = await fetch(`${DISCORD_API}/oauth2/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      grant_type: 'authorization_code',
-      code: String(code),
-      redirect_uri: REDIRECT_URI,
-      scope: OAUTH_SCOPE
-    })
-  });
+  // Helpful debug in Railway logs (safe; does not print secrets)
+  console.log('[callback] got code:', String(code).slice(0, 6) + '...');
+  console.log('[callback] redirect_uri:', REDIRECT_URI);
+
+  let tokenResp;
+  try {
+    tokenResp = await fetch(${DISCORD_API}/oauth2/token, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+        grant_type: 'authorization_code',
+        code: String(code),
+        redirect_uri: REDIRECT_URI,
+        scope: OAUTH_SCOPE
+      })
+    });
+  } catch (e) {
+    console.log('[callback] token fetch failed:', e?.message || e);
+    return res.send(page('OAuth failed', <div class='alert alert-danger'>OAuth failed (network error).</div>));
+  }
 
   const token = await tokenResp.json().catch(() => ({}));
+
   if (!token?.access_token) {
-    return res.send(page('OAuth failed', `<div class='alert alert-danger'>OAuth failed: <pre>${escapeHtml(JSON.stringify(token, null, 2))}</pre></div>`));
+    console.log('[callback] token exchange failed:', tokenResp.status, token);
+    return res.send(page(
+      'OAuth failed',
+      `<div class='alert alert-danger'>
+        OAuth failed (status ${tokenResp.status}): 
+        <pre>${escapeHtml(JSON.stringify(token, null, 2))}</pre>
+        <div class="hint">Most common: redirect_uri mismatch. Ensure REDIRECT URI in Railway + Discord Portal are identical.</div>
+      </div>`
+    ));
   }
 
   req.session.access_token = token.access_token;
-  res.redirect('/guilds');
+  return res.redirect('/guilds');
 });
 
 app.get('/guilds', async (req, res) => {
@@ -400,22 +437,20 @@ app.get('/guilds', async (req, res) => {
 
   const { data, status } = await discordGet(req.session.access_token, '/users/@me/guilds');
   if (status !== 200 || !Array.isArray(data)) {
-    return res.status(500).send(`<h3>Failed to load guilds</h3><pre>Discord API error ${status}: ${escapeHtml(JSON.stringify(data, null, 2))}</pre>`);
+    return res.status(500).send(<h3>Failed to load guilds</h3><pre>Discord API error ${status}: ${escapeHtml(JSON.stringify(data, null, 2))}</pre>);
   }
 
   const { manageable, others } = manageableGuilds(data);
 
   const clientId = process.env.BOT_CLIENT_ID || process.env.DISCORD_CLIENT_ID;
-  if (!clientId) return res.status(500).send('<h3>Missing BOT_CLIENT_ID (Application ID) in .env</h3>');
+  if (!clientId) return res.status(500).send('<h3>Missing BOT_CLIENT_ID (Application ID) in env</h3>');
 
   const perms = process.env.BOT_PERMISSIONS || '8';
-  const addBotUrl = `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(clientId)}&scope=bot%20applications.commands&permissions=${encodeURIComponent(perms)}`;
+  const addBotUrl = https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(clientId)}&scope=bot%20applications.commands&permissions=${encodeURIComponent(perms)};
 
   let manageableHtml = '';
   for (const g of manageable) {
-
-
-const gid = String(g.id);
+    const gid = String(g.id);
     const name = escapeHtml(g.name || 'Unknown');
     manageableHtml += `
       <a class="list-group-item list-group-item-action d-flex justify-content-between align-items-center"
@@ -425,11 +460,11 @@ const gid = String(g.id);
       </a>`;
   }
   if (!manageableHtml) {
-    manageableHtml = `<div class="text-muted">No manageable servers found. You need <b>Manage Server</b> permission.</div>`;
+    manageableHtml = <div class="text-muted">No manageable servers found. You need <b>Manage Server</b> permission.</div>;
   }
 
   let othersHtml = '';
-  for (const g of others) othersHtml += `<li>${escapeHtml(g.name || 'Unknown')}</li>`;
+  for (const g of others) othersHtml += <li>${escapeHtml(g.name || 'Unknown')}</li>;
   if (!othersHtml) othersHtml = '<li>None</li>';
 
   const body = `
@@ -469,30 +504,32 @@ app.get('/dashboard/:guildId/channels', async (req, res) => {
 
   if (!DISCORD_BOT_TOKEN) return res.json([]);
 
-  const r = await fetch(`${DISCORD_API}/guilds/${encodeURIComponent(req.params.guildId)}/channels`, {
-    headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}` }
+  const r = await fetch(${DISCORD_API}/guilds/${encodeURIComponent(req.params.guildId)}/channels, {
+    headers: { Authorization: Bot ${DISCORD_BOT_TOKEN} }
   });
   if (r.status !== 200) return res.json([]);
 
   const chans = await r.json().catch(() => []);
-  const text = Array.isArray(chans) ? chans
-    .filter(c => c?.type === 0)
-    .map(c => ({ id: String(c.id), name: String(c.name) }))
-    .sort((a,b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
+  const text = Array.isArray(chans)
+    ? chans
+        .filter(c => c?.type === 0)
+        .map(c => ({ id: String(c.id), name: String(c.name) }))
+        .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
     : [];
   res.json(text);
 });
 
 app.all('/dashboard/:guildId', async (req, res) => {
   if (!req.session.access_token) return res.redirect('/login');
+
   const guildId = String(req.params.guildId);
 
   // ensure row exists
-  const row = await ensureGuildRow(guildId);
+  await ensureGuildRow(guildId);
 
   if (req.method === 'POST') {
     const b = (name) => (req.body?.[name] === 'on');
-    const updated = await updateGuildSettings(guildId, {
+    await updateGuildSettings(guildId, {
       log_channel_id: req.body?.log_channel_id || '',
       log_join: b('log_join'),
       log_invites: b('log_invites'),
@@ -505,7 +542,7 @@ app.all('/dashboard/:guildId', async (req, res) => {
       log_timeout: b('log_timeout'),
     });
 
-    return res.redirect(`/dashboard/${encodeURIComponent(guildId)}?saved=1`);
+    return res.redirect(/dashboard/${encodeURIComponent(guildId)}?saved=1);
   }
 
   const current = await getGuildSettings(guildId);
@@ -548,32 +585,36 @@ app.all('/dashboard/:guildId', async (req, res) => {
   </div>
 
 <script>
-const gid = ${JSON.stringify(guildId)};
-const loadBtn = document.getElementById('loadCh');
-const sel = document.getElementById('chSelect');
-const input = document.querySelector('input[name="log_channel_id"]');
+  // toast if saved=1
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('saved') === '1') window.toast('Saved', 'Your settings were updated.', 'ok');
 
-loadBtn?.addEventListener('click', async () => {
-  loadBtn.disabled = true;
-  loadBtn.textContent = 'Loading...';
-  try {
-    const r = await fetch('/dashboard/' + encodeURIComponent(gid) + '/channels');
-    const chans = await r.json();
-    sel.innerHTML = '<option value="">-- pick a text channel --</option>';
-    for (const c of chans) {
-      const opt = document.createElement('option');
-      opt.value = c.id;
-      opt.textContent = '#' + c.name + ' (' + c.id + ')';
-      sel.appendChild(opt);
-    }
-  } catch (e) {}
-  loadBtn.disabled = false;
-  loadBtn.textContent = 'Load channels';
-});
+  const gid = ${JSON.stringify(guildId)};
+  const loadBtn = document.getElementById('loadCh');
+  const sel = document.getElementById('chSelect');
+  const input = document.querySelector('input[name="log_channel_id"]');
 
-sel?.addEventListener('change', () => {
-  if (sel.value) input.value = sel.value;
-});
+  loadBtn?.addEventListener('click', async () => {
+    loadBtn.disabled = true;
+    loadBtn.textContent = 'Loading...';
+    try {
+      const r = await fetch('/dashboard/' + encodeURIComponent(gid) + '/channels');
+      const chans = await r.json();
+      sel.innerHTML = '<option value="">-- pick a text channel --</option>';
+      for (const c of chans) {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = '#' + c.name + ' (' + c.id + ')';
+        sel.appendChild(opt);
+      }
+    } catch (e) {}
+    loadBtn.disabled = false;
+    loadBtn.textContent = 'Load channels';
+  });
+
+  sel?.addEventListener('change', () => {
+    if (sel.value) input.value = sel.value;
+  });
 </script>
   `;
 
@@ -600,7 +641,6 @@ function check(name, label, checked) {
     <label class="form-check-label" for="${name}">${label}</label>
   </div>`;
 }
-
 
 function escapeHtml(s) {
   return String(s ?? '')
