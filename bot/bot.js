@@ -20,7 +20,7 @@ const __dirname = path.dirname(__filename);
 const TOKEN = process.env.DISCORD_TOKEN;
 const DEFAULT_LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID ? String(process.env.LOG_CHANNEL_ID).trim() : '';
 const GUILD_ID = (process.env.GUILD_ID || '').trim();
-const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://loggerbyshavgula.up.railway.app';
+const DASHBOARD_URL = process.env.DASHBOARD_URL || 'http://127.0.0.1:5000/guilds';
 
 if (!TOKEN) throw new Error('DISCORD_TOKEN missing in .env');
 
@@ -63,6 +63,29 @@ async function getSettings(guildId) {
     return await r.json().catch(() => null);
   }
   return await ensureGuildRow(guildId);
+}
+
+
+
+// ===== Settings helpers =====
+// SQLite may return 0/1 as numbers or strings ("0"/"1"). JS treats "0" as truthy,
+// so we must normalize to a real boolean.
+function isEnabled(settings, key, def = 1) {
+  const v = settings?.[key];
+
+  if (v === undefined || v === null || v === '') return def === 1;
+
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number') return v === 1;
+  if (typeof v === 'bigint') return v === 1n;
+
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (s === '') return def === 1;
+    return s === '1' || s === 'true' || s === 'yes' || s === 'on';
+  }
+
+  return Boolean(v);
 }
 
 // ===== Discord client =====
@@ -220,12 +243,10 @@ client.on('inviteDelete', async (invite) => {
 
 client.on('guildMemberAdd', async (member) => {
   const settings = await getSettings(member.guild.id);
-  const logJoin = settings?.log_join ?? 1;
-  if (!logJoin) return;
+  if (!isEnabled(settings, 'log_join', 1)) return;
 
   let inviteInfo = '';
-  const logInvites = settings?.log_invites ?? 1;
-  if (logInvites) inviteInfo = await detectUsedInviteOrVanity(member.guild);
+  if (isEnabled(settings, 'log_invites', 1)) inviteInfo = await detectUsedInviteOrVanity(member.guild);
 
   const createdAt = member.user.createdAt
     ? `<t:${Math.floor(member.user.createdAt.getTime() / 1000)}:F>`
@@ -241,7 +262,7 @@ client.on('guildMemberAdd', async (member) => {
 
 client.on('guildMemberRemove', async (member) => {
   const settings = await getSettings(member.guild.id);
-  const logKick = settings?.log_kick ?? 1;
+  const logKick = isEnabled(settings, 'log_kick', 1);
 
   if (logKick) {
     const entry = await findAuditActor(member.guild, AuditLogEvent.MemberKick, member.id, 20);
@@ -257,8 +278,7 @@ client.on('guildMemberRemove', async (member) => {
     }
   }
 
-  const logJoin = settings?.log_join ?? 1;
-  if (!logJoin) return;
+  if (!isEnabled(settings, 'log_join', 1)) return;
 
   await sendLog(
     member.guild,
@@ -273,7 +293,7 @@ client.on('guildBanAdd', async (ban) => {
   const user = ban.user;
 
   const settings = await getSettings(guild.id);
-  const logBan = settings?.log_ban ?? 1;
+  const logBan = isEnabled(settings, 'log_ban', 1);
   if (!logBan) return;
 
   const entry = await findAuditActor(guild, AuditLogEvent.MemberBanAdd, user.id, 25);
@@ -292,7 +312,7 @@ client.on('guildMemberUpdate', async (before, after) => {
   const settings = await getSettings(after.guild.id);
 
   // Roles
-  const logRoles = settings?.log_roles ?? 1;
+  const logRoles = isEnabled(settings, 'log_roles', 1);
   if (logRoles) {
     const beforeRoles = new Set(before.roles.cache.keys());
     const afterRoles = new Set(after.roles.cache.keys());
@@ -325,7 +345,7 @@ client.on('guildMemberUpdate', async (before, after) => {
   }
 
   // Nickname
-  const logNick = settings?.log_nickname ?? 1;
+  const logNick = isEnabled(settings, 'log_nickname', 1);
   if (logNick && before.nickname !== after.nickname) {
     const entry = await findAuditActor(after.guild, AuditLogEvent.MemberUpdate, after.id, 25);
     const mod = entry?.executor ? `${entry.executor.tag} (\`${entry.executor.id}\`)` : 'Unknown';
@@ -342,7 +362,7 @@ client.on('guildMemberUpdate', async (before, after) => {
   }
 
   // Timeout
-  const logTimeout = settings?.log_timeout ?? 1;
+  const logTimeout = isEnabled(settings, 'log_timeout', 1);
   if (logTimeout && before.communicationDisabledUntilTimestamp !== after.communicationDisabledUntilTimestamp) {
     const entry = await findAuditActor(after.guild, AuditLogEvent.MemberUpdate, after.id, 25);
     const mod = entry?.executor ? `${entry.executor.tag} (\`${entry.executor.id}\`)` : 'Unknown';
@@ -371,7 +391,7 @@ client.on('messageDelete', async (message) => {
   if (message.author?.bot) return;
 
   const settings = await getSettings(message.guild.id);
-  const logDel = settings?.log_message_delete ?? 1;
+  const logDel = isEnabled(settings, 'log_message_delete', 1);
   if (!logDel) return;
 
   const author = message.author ? `${message.author.tag} (\`${message.author.id}\`)` : 'Unknown';
@@ -392,7 +412,7 @@ client.on('messageUpdate', async (before, after) => {
   if (before.content === after.content) return;
 
   const settings = await getSettings(after.guild.id);
-  const logEdit = settings?.log_message_edit ?? 1;
+  const logEdit = isEnabled(settings, 'log_message_edit', 1);
   if (!logEdit) return;
 
   const beforeTxt = String(before.content || '*no text*').slice(0, 900);
