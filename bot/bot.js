@@ -22,7 +22,7 @@ const TOKEN = (process.env.DISCORD_TOKEN || '').trim();
 if (!TOKEN) throw new Error('DISCORD_TOKEN missing in env');
 
 const DEFAULT_LOG_CHANNEL_ID = (process.env.LOG_CHANNEL_ID || '').trim(); // optional fallback
-const GUILD_ID = (process.env.GUILD_ID || '').trim();
+const GUILD_ID = (process.env.GUILD_ID || '').trim(); // რეკომენდებულია ტესტისთვის
 const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://loggerbyshavgula.up.railway.app/';
 
 // ===== Settings source (sqlite by default; HTTP recommended on Railway with 2 services) =====
@@ -95,7 +95,6 @@ async function resolveLogChannel(guild, settings) {
   const id = fromSettings || fallback;
   if (!id) return null;
 
-  // cache first, then fetch
   return (
     guild.channels.cache.get(id) ||
     (await guild.channels.fetch(id).catch(() => null))
@@ -198,7 +197,7 @@ async function syncSlashCommands() {
   const kickCmd = new SlashCommandBuilder()
     .setName('kick')
     .setDescription('Kick all members that have a specific role')
-    .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers)
+    // intentionally NOT setting default permissions so it doesn't get hidden in UI
     .addRoleOption(opt =>
       opt.setName('role')
         .setDescription('Role whose members will be kicked')
@@ -217,7 +216,11 @@ async function syncSlashCommands() {
 
   const body = [dashboardCmd.toJSON(), kickCmd.toJSON()];
 
-  if (GUILD_ID && /^\d+$/.test(GUILD_ID)) {
+  const guildMode = (GUILD_ID && /^\d+$/.test(GUILD_ID));
+  console.log('Registering commands:', body.map(c => c.name).join(', '));
+  console.log('Register mode:', guildMode ? `GUILD (${GUILD_ID})` : 'GLOBAL');
+
+  if (guildMode) {
     await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body });
     console.log(`✅ Synced slash commands to guild ${GUILD_ID}`);
   } else {
@@ -242,17 +245,19 @@ client.on('interactionCreate', async (interaction) => {
     const reason = interaction.options.getString('reason') || 'Kicked by /kick role command';
     const dryRun = interaction.options.getBoolean('dry_run') ?? false;
 
+    // user permission check
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.KickMembers)) {
       return interaction.reply({ content: 'არ გაქვს Kick Members უფლება.', ephemeral: true });
     }
 
     await interaction.deferReply({ ephemeral: true });
 
-    const me = interaction.guild?.members?.me;
-    if (!interaction.guild || !me) {
-      return interaction.editReply('ვერ ვიპოვე guild/bot member ობიექტი.');
-    }
+    if (!interaction.guild) return interaction.editReply('ეს command მხოლოდ სერვერზე მუშაობს.');
 
+    const me = interaction.guild.members.me;
+    if (!me) return interaction.editReply('ვერ ვიპოვე ბოტის member ობიექტი.');
+
+    // bot permission check
     if (!me.permissions.has(PermissionFlagsBits.KickMembers)) {
       return interaction.editReply('ბოტს არ აქვს Kick Members უფლება.');
     }
@@ -317,6 +322,24 @@ client.once('ready', async () => {
   for (const g of client.guilds.cache.values()) await refreshInvitesForGuild(g);
 
   await syncSlashCommands().catch((e) => console.log('Slash sync error:', e?.message || e));
+
+  // ===== DEBUG: confirm commands exist in Discord API =====
+  try {
+    console.log("Guilds bot is in:", client.guilds.cache.map(g => `${g.name}:${g.id}`).join(" | "));
+
+    const globalCmds = await client.application.commands.fetch();
+    console.log("GLOBAL cmds:", [...globalCmds.values()].map(c => c.name).join(", ") || "(none)");
+
+    if (GUILD_ID) {
+      const g = await client.guilds.fetch(GUILD_ID);
+      const guildCmds = await g.commands.fetch();
+      console.log("GUILD cmds:", [...guildCmds.values()].map(c => c.name).join(", ") || "(none)");
+    } else {
+      console.log("No GUILD_ID set, skipping GUILD cmds fetch.");
+    }
+  } catch (e) {
+    console.log("Commands debug error:", e?.message || e);
+  }
 });
 
 client.on('guildCreate', async (guild) => {
@@ -511,6 +534,111 @@ client.on('messageUpdate', async (before, after) => {
     '✏️ Message Edited',
     `**Author:** ${after.author.tag} (\`${after.author.id}\`)\n**Channel:** ${after.channel.toString()}\n\n**Before:**\n${beforeTxt}\n\n**After:**\n${afterTxt}`
   );
+});
+
+/* ============================================================
+   PREFIX COMMANDS: !kick / !kickdry
+   Usage:
+   - !kick @Role reason...
+   - !kickdry @Role
+   ============================================================ */
+client.on('messageCreate', async (message) => {
+  try {
+    if (!message.guild) return;
+    if (message.author.bot) return;
+
+    const content = message.content.trim();
+    const lower = content.toLowerCase();
+
+    const isKick = lower.startsWith('!kick ');
+    const isKickDry = lower.startsWith('!kickdry ');
+    if (!isKick && !isKickDry) return;
+
+    // user permission
+    if (!message.member?.permissions?.has(PermissionFlagsBits.KickMembers)) {
+      return message.reply('არ გაქვს Kick Members უფლება.').catch(() => {});
+    }
+
+    // bot permission
+    const me = message.guild.members.me;
+    if (!me?.permissions?.has(PermissionFlagsBits.KickMembers)) {
+      return message.reply('ბოტს არ აქვს Kick Members უფლება.').catch(() => {});
+    }
+
+    // role from mention OR id
+    const roleMention = message.mentions.roles.first();
+    const parts = content.split(/\s+/);
+    const rawRole = parts[1] || '';
+    const roleId = rawRole.replace(/[<@&>]/g, '');
+    const role =
+      roleMention ||
+      message.guild.roles.cache.get(roleId) ||
+      (await message.guild.roles.fetch(roleId).catch(() => null));
+
+    if (!role) {
+      return message.reply('როლი ვერ ვიპოვე. გამოიყენე: `!kick @role reason` ან `!kickdry @role`').catch(() => {});
+    }
+
+    // ensure members are available
+    await message.guild.members.fetch().catch(() => null);
+
+    const targets = role.members;
+    if (!targets || targets.size === 0) {
+      return message.reply(`ამ როლზე (**${role.name}**) წევრები არ არიან.`).catch(() => {});
+    }
+
+    if (isKickDry) {
+      return message.reply(`DRY RUN ✅ როლზე **${role.name}** არის **${targets.size}** წევრი.`).catch(() => {});
+    }
+
+    // reason = everything after role
+    const reason = parts.slice(2).join(' ').trim() || `Kicked by ${message.author.tag}`;
+
+    const botTop = me.roles.highest.position;
+    const invokerTop = message.member.roles.highest.position;
+
+    let kicked = 0;
+    let skipped = 0;
+
+    const statusMsg = await message.reply(
+      `ვიწყებ... Role: **${role.name}** | Members: **${targets.size}**`
+    ).catch(() => null);
+
+    for (const member of targets.values()) {
+      // skip bot/self
+      if (member.id === me.id || member.id === message.author.id) {
+        skipped++;
+        continue;
+      }
+
+      const memberTop = member.roles.highest.position;
+
+      // bot hierarchy
+      if (memberTop >= botTop) {
+        skipped++;
+        continue;
+      }
+
+      // invoker hierarchy (owner exception)
+      if (message.guild.ownerId !== message.author.id && memberTop >= invokerTop) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        await member.kick(reason);
+        kicked++;
+      } catch {
+        skipped++;
+      }
+    }
+
+    const finalText = `Done ✅ | Role: **${role.name}** | Kicked: **${kicked}** | Skipped: **${skipped}**`;
+    if (statusMsg) await statusMsg.edit(finalText).catch(() => {});
+    else await message.reply(finalText).catch(() => {});
+  } catch {
+    // ignore
+  }
 });
 
 client.login(TOKEN);
