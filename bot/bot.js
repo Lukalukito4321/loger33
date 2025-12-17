@@ -186,6 +186,110 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.GuildMember]
 });
 
+
+
+
+
+
+require("dotenv").config();
+const {
+  Client,
+  GatewayIntentBits,
+  PermissionFlagsBits,
+} = require("discord.js");
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers, // საჭიროა role.members / fetch
+  ],
+});
+
+client.once("ready", () => console.log(`Logged in as ${client.user.tag}`));
+
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName !== "kick") return;
+
+  const role = interaction.options.getRole("role");
+  const reason =
+    interaction.options.getString("reason") || "Kicked by /kick role command";
+  const dryRun = interaction.options.getBoolean("dry_run") ?? false;
+
+  if (!interaction.memberPermissions.has(PermissionFlagsBits.KickMembers)) {
+    return interaction.reply({ content: "არ გაქვს Kick Members უფლება.", ephemeral: true });
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const me = interaction.guild.members.me;
+  if (!me) return interaction.editReply("ვერ ვიპოვე ბოტის member ობიექტი.");
+
+  if (!me.permissions.has(PermissionFlagsBits.KickMembers)) {
+    return interaction.editReply("ბოტს არ აქვს Kick Members უფლება.");
+  }
+
+  await interaction.guild.members.fetch(); // რომ role.members ზუსტად იყოს
+
+  const targets = role.members;
+  if (!targets || targets.size === 0) {
+    return interaction.editReply(`ამ როლზე (${role.name}) წევრები ვერ მოიძებნა.`);
+  }
+
+  if (dryRun) {
+    return interaction.editReply(`DRY RUN: როლზე **${role.name}** არის **${targets.size}** წევრი.`);
+  }
+
+  const botTop = me.roles.highest.position;
+  const invokerTop = interaction.member.roles.highest.position;
+
+  let kicked = 0;
+  let skipped = 0;
+
+  for (const member of targets.values()) {
+    // skip bot/self
+    if (member.id === me.id || member.id === interaction.user.id) {
+      skipped++;
+      continue;
+    }
+
+    const memberTop = member.roles.highest.position;
+
+    // bot hierarchy
+    if (memberTop >= botTop) {
+      skipped++;
+      continue;
+    }
+
+    // invoker hierarchy (owner-ს გამონაკლისი)
+    if (interaction.guild.ownerId !== interaction.user.id && memberTop >= invokerTop) {
+      skipped++;
+      continue;
+    }
+
+    try {
+      await member.kick(reason);
+      kicked++;
+    } catch {
+      skipped++;
+    }
+  }
+
+  return interaction.editReply(
+    `Done ✅\nRole: **${role.name}**\nKicked: **${kicked}**\nSkipped: **${skipped}**`
+  );
+});
+
+
+
+
+
+
+
+
+
+
+
 // ===== Slash command: /dashboard (optional) =====
 async function syncSlashCommands() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
