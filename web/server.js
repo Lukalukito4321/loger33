@@ -2,16 +2,21 @@ import 'dotenv/config';
 import express from 'express';
 import session from 'express-session';
 import fetch from 'node-fetch';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { ensureGuildRow, getGuildSettings, updateGuildSettings } from './settings.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 
 const SESSION_SECRET = process.env.FLASK_SECRET_KEY || 'dev';
-const CLIENT_ID = (process.env.DISCORD_CLIENT_ID || '').trim();
-const CLIENT_SECRET = (process.env.DISCORD_CLIENT_SECRET || '').trim();
-const REDIRECT_URI = (process.env.DISCORD_REDIRECT_URI || '').trim(); // full https://domain/callback
-const DISCORD_BOT_TOKEN = (process.env.DISCORD_BOT_TOKEN || '').trim();
-const BOT_API_KEY = (process.env.BOT_API_KEY || '').trim();
+const CLIENT_ID = process.env.DISCORD_CLIENT_ID || '';
+const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || '';
+const REDIRECT_URI = process.env.DISCORD_REDIRECT_URI || ''; // MUST be full URL to /callback in this version
+const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || '';
+const BOT_API_KEY = process.env.BOT_API_KEY || '';
 
 const DISCORD_API = 'https://discord.com/api';
 const OAUTH_SCOPE = 'identify guilds';
@@ -19,36 +24,20 @@ const OAUTH_SCOPE = 'identify guilds';
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// Railway/HTTPS proxy support so cookies persist after OAuth redirect
-app.set('trust proxy', 1);
-
 app.use(session({
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: true
-  }
+  cookie: { httpOnly: true }
 }));
 
-function page(title, body, loggedIn = false) {
-  const rightControls = loggedIn
-    ? `
-      <span class="pill"><i class="bi bi-check-circle-fill" style="color:rgba(34,197,94,.95)"></i><span class="small">Signed in</span></span>
-      <a class="btn btn-outline-light btn-sm" href="/logout"><i class="bi bi-box-arrow-right me-1"></i>Logout</a>
-    `
-    : `
-      <span class="pill"><i class="bi bi-person-circle"></i><span class="small">Guest</span></span>
-    `;
-
+function page(title, body, loggedIn=false) {
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>${escapeHtml(title)}</title>
+  <title>${title}</title>
 
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
@@ -75,24 +64,60 @@ function page(title, body, loggedIn = false) {
         linear-gradient(180deg, var(--bg0), var(--bg1));
     }
 
-    .app-shell{ max-width: 1100px; margin: 0 auto; padding: 28px 14px 48px; }
-    .topbar{ display:flex; align-items:center; justify-content:space-between; gap: 12px; margin-bottom: 18px; }
+    .app-shell{
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 28px 14px 48px;
+    }
 
-    .brand{ display:flex; align-items:center; gap: 12px; }
+    .topbar{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .brand{
+      display:flex;
+      align-items:center;
+      gap: 12px;
+    }
     .brand .logo{
-      width: 44px; height: 44px; border-radius: 14px;
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
       background: linear-gradient(135deg, rgba(91,140,255,.95), rgba(34,197,94,.65));
       box-shadow: 0 10px 30px rgba(91,140,255,.25);
-      display:flex; align-items:center; justify-content:center;
+      display:flex;
+      align-items:center;
+      justify-content:center;
       border: 1px solid rgba(255,255,255,.12);
     }
     .brand .logo i{ font-size: 20px; color: rgba(255,255,255,.95); }
-    .brand h1{ font-size: 18px; margin: 0; letter-spacing: .2px; font-weight: 700; line-height: 1.1; }
-    .brand .subtitle{ font-size: 13px; color: var(--muted); margin-top: 2px; }
+
+    .brand h1{
+      font-size: 18px;
+      margin: 0;
+      letter-spacing: .2px;
+      font-weight: 700;
+      line-height: 1.1;
+    }
+    .brand .subtitle{
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
 
     .pill{
-      display:inline-flex; align-items:center; gap: 8px; padding: 8px 12px; border-radius: 999px;
-      background: rgba(255,255,255,.06); border: 1px solid var(--stroke); backdrop-filter: blur(10px);
+      display:inline-flex;
+      align-items:center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.06);
+      border: 1px solid var(--stroke);
+      backdrop-filter: blur(10px);
     }
 
     .card{
@@ -111,6 +136,7 @@ function page(title, body, loggedIn = false) {
     }
 
     .muted{ color: var(--muted); }
+
     a{ color: #9bbcff; text-decoration: none; }
     a:hover{ text-decoration: underline; }
 
@@ -167,17 +193,39 @@ function page(title, body, loggedIn = false) {
       border-color: rgba(91,140,255,.55);
     }
 
-    .form-check-input{ background-color: rgba(15,26,51,.90); border-color: rgba(255,255,255,.22); }
-    .form-switch .form-check-input{ width: 44px; height: 22px; border-radius: 999px; }
-    .form-switch .form-check-input:checked{ background-color: rgba(91,140,255,.85); border-color: rgba(91,140,255,.85); }
+    .form-check-input{
+      background-color: rgba(15,26,51,.90);
+      border-color: rgba(255,255,255,.22);
+    }
+    .form-switch .form-check-input{
+      width: 44px;
+      height: 22px;
+      border-radius: 999px;
+    }
+    .form-switch .form-check-input:checked{
+      background-color: rgba(91,140,255,.85);
+      border-color: rgba(91,140,255,.85);
+    }
 
-    .divider{ height:1px; background: rgba(255,255,255,.10); margin: 14px 0; }
-    .hint{ font-size: 12px; color: rgba(233,238,252,.65); }
+    .divider{
+      height:1px;
+      background: rgba(255,255,255,.10);
+      margin: 14px 0;
+    }
+
+    .hint{
+      font-size: 12px;
+      color: rgba(233,238,252,.65);
+    }
+
     .kbd{
-      padding: 2px 7px; border-radius: 8px;
-      background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+      padding: 2px 7px;
+      border-radius: 8px;
+      background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.12);
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      font-size: 12px; color: rgba(233,238,252,.85);
+      font-size: 12px;
+      color: rgba(233,238,252,.85);
     }
 
     .toastish{
@@ -210,7 +258,12 @@ function page(title, body, loggedIn = false) {
       </div>
 
       <div class="d-flex align-items-center gap-2">
-        ${rightControls}
+        ${loggedIn ? `
+          <span class="pill"><i class="bi bi-check-circle-fill" style="color:rgba(34,197,94,.95)"></i><span class="small">Signed in</span></span>
+          <a class="btn btn-outline-light btn-sm" href="/logout"><i class="bi bi-box-arrow-right me-1"></i>Logout</a>
+        ` : `
+          <span class="pill"><i class="bi bi-person-circle"></i><span class="small">Guest</span></span>
+        `}
       </div>
     </div>
 
@@ -246,8 +299,9 @@ function page(title, body, loggedIn = false) {
 </html>`;
 }
 
-async function discordGet(token, apiPath) {
-  const r = await fetch(`${DISCORD_API}${apiPath}`, {
+
+async function discordGet(token, path) {
+  const r = await fetch(`${DISCORD_API}${path}`, {
     headers: { Authorization: `Bearer ${token}` }
   });
   let data;
@@ -288,7 +342,7 @@ app.get('/', (req, res) => {
             <li>Load channels from your server to avoid copy/paste</li>
           </ul>
           <div class="divider"></div>
-          <div class="hint">Tip: <span class="kbd">DISCORD_REDIRECT_URI</span> must be <span class="kbd">https://YOURDOMAIN/callback</span></div>
+          <div class="hint">Tip: If OAuth fails, double-check <span class="kbd"></div>
         </div>
         <div class="col-lg-4 text-lg-end">
           <a class="btn btn-primary w-100" href="/login"><i class="bi bi-discord me-1"></i>Login with Discord</a>
@@ -301,17 +355,13 @@ app.get('/', (req, res) => {
 
 app.get('/login', (req, res) => {
   if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI) {
-    return res.send(page('Config error',
-      `<div class='alert alert-danger'>Missing DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET / DISCORD_REDIRECT_URI</div>`
-    ));
+    return res.send(page('Config error', `<div class='alert alert-danger'>Missing DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET / DISCORD_REDIRECT_URI</div>`));
   }
-
   const url = `${DISCORD_API}/oauth2/authorize`
     + `?client_id=${encodeURIComponent(CLIENT_ID)}`
     + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
     + `&response_type=code`
     + `&scope=${encodeURIComponent(OAUTH_SCOPE)}`;
-
   res.redirect(url);
 });
 
@@ -338,9 +388,7 @@ app.get('/callback', async (req, res) => {
 
   const token = await tokenResp.json().catch(() => ({}));
   if (!token?.access_token) {
-    return res.send(page('OAuth failed',
-      `<div class='alert alert-danger'>OAuth failed (status ${tokenResp.status}): <pre>${escapeHtml(JSON.stringify(token, null, 2))}</pre></div>`
-    ));
+    return res.send(page('OAuth failed', `<div class='alert alert-danger'>OAuth failed: <pre>${escapeHtml(JSON.stringify(token, null, 2))}</pre></div>`));
   }
 
   req.session.access_token = token.access_token;
@@ -358,14 +406,16 @@ app.get('/guilds', async (req, res) => {
   const { manageable, others } = manageableGuilds(data);
 
   const clientId = process.env.BOT_CLIENT_ID || process.env.DISCORD_CLIENT_ID;
-  if (!clientId) return res.status(500).send('<h3>Missing BOT_CLIENT_ID (Application ID) in env</h3>');
+  if (!clientId) return res.status(500).send('<h3>Missing BOT_CLIENT_ID (Application ID) in .env</h3>');
 
   const perms = process.env.BOT_PERMISSIONS || '8';
-  const addBotUrl = `https://discord.com/oauth2/authorize?client_id=1450459526410014741&permissions=8&response_type=code&redirect_uri=https%3A%2F%2Floggerbyshavgula.up.railway.app%2Fcallback&integration_type=0&scope=bot${encodeURIComponent(clientId)}&scope=bot%20applications.commands&permissions=${encodeURIComponent(perms)}`;
+  const addBotUrl = `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(clientId)}&scope=bot%20applications.commands&permissions=${encodeURIComponent(perms)}`;
 
   let manageableHtml = '';
   for (const g of manageable) {
-    const gid = String(g.id);
+
+
+const gid = String(g.id);
     const name = escapeHtml(g.name || 'Unknown');
     manageableHtml += `
       <a class="list-group-item list-group-item-action d-flex justify-content-between align-items-center"
@@ -409,6 +459,7 @@ app.get('/guilds', async (req, res) => {
 app.get('/dashboard/:guildId/channels', async (req, res) => {
   if (!req.session.access_token) return res.sendStatus(401);
 
+  // Verify user can manage this guild
   const { data, status } = await discordGet(req.session.access_token, '/users/@me/guilds');
   if (status !== 200 || !Array.isArray(data)) return res.json([]);
 
@@ -424,23 +475,24 @@ app.get('/dashboard/:guildId/channels', async (req, res) => {
   if (r.status !== 200) return res.json([]);
 
   const chans = await r.json().catch(() => []);
-  const text = Array.isArray(chans)
-    ? chans.filter(c => c?.type === 0)
-      .map(c => ({ id: String(c.id), name: String(c.name) }))
-      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
+  const text = Array.isArray(chans) ? chans
+    .filter(c => c?.type === 0)
+    .map(c => ({ id: String(c.id), name: String(c.name) }))
+    .sort((a,b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
     : [];
   res.json(text);
 });
 
 app.all('/dashboard/:guildId', async (req, res) => {
   if (!req.session.access_token) return res.redirect('/login');
-
   const guildId = String(req.params.guildId);
-  await ensureGuildRow(guildId);
+
+  // ensure row exists
+  const row = await ensureGuildRow(guildId);
 
   if (req.method === 'POST') {
     const b = (name) => (req.body?.[name] === 'on');
-    await updateGuildSettings(guildId, {
+    const updated = await updateGuildSettings(guildId, {
       log_channel_id: req.body?.log_channel_id || '',
       log_join: b('log_join'),
       log_invites: b('log_invites'),
@@ -496,41 +548,39 @@ app.all('/dashboard/:guildId', async (req, res) => {
   </div>
 
 <script>
-  const params = new URLSearchParams(window.location.search);
-  if (params.get('saved') === '1') window.toast('Saved', 'Your settings were updated.', 'ok');
+const gid = ${JSON.stringify(guildId)};
+const loadBtn = document.getElementById('loadCh');
+const sel = document.getElementById('chSelect');
+const input = document.querySelector('input[name="log_channel_id"]');
 
-  const gid = ${JSON.stringify(guildId)};
-  const loadBtn = document.getElementById('loadCh');
-  const sel = document.getElementById('chSelect');
-  const input = document.querySelector('input[name="log_channel_id"]');
+loadBtn?.addEventListener('click', async () => {
+  loadBtn.disabled = true;
+  loadBtn.textContent = 'Loading...';
+  try {
+    const r = await fetch('/dashboard/' + encodeURIComponent(gid) + '/channels');
+    const chans = await r.json();
+    sel.innerHTML = '<option value="">-- pick a text channel --</option>';
+    for (const c of chans) {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = '#' + c.name + ' (' + c.id + ')';
+      sel.appendChild(opt);
+    }
+  } catch (e) {}
+  loadBtn.disabled = false;
+  loadBtn.textContent = 'Load channels';
+});
 
-  loadBtn?.addEventListener('click', async () => {
-    loadBtn.disabled = true;
-    loadBtn.textContent = 'Loading...';
-    try {
-      const r = await fetch('/dashboard/' + encodeURIComponent(gid) + '/channels');
-      const chans = await r.json();
-      sel.innerHTML = '<option value="">-- pick a text channel --</option>';
-      for (const c of chans) {
-        const opt = document.createElement('option');
-        opt.value = c.id;
-        opt.textContent = '#' + c.name + ' (' + c.id + ')';
-        sel.appendChild(opt);
-      }
-    } catch (e) {}
-    loadBtn.disabled = false;
-    loadBtn.textContent = 'Load channels';
-  });
-
-  sel?.addEventListener('change', () => {
-    if (sel.value) input.value = sel.value;
-  });
+sel?.addEventListener('change', () => {
+  if (sel.value) input.value = sel.value;
+});
 </script>
   `;
 
   res.send(page('Dashboard', body, true));
 });
 
+// API endpoint for bot (same shape as Python /api/settings/<guild_id>)
 app.get('/api/settings/:guildId', async (req, res) => {
   if (req.get('X-API-KEY') !== BOT_API_KEY) return res.sendStatus(401);
 
@@ -550,6 +600,7 @@ function check(name, label, checked) {
     <label class="form-check-label" for="${name}">${label}</label>
   </div>`;
 }
+
 
 function escapeHtml(s) {
   return String(s ?? '')
