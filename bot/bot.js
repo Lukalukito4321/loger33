@@ -22,11 +22,11 @@ if (!TOKEN) throw new Error('DISCORD_TOKEN missing in env');
 
 const DEFAULT_LOG_CHANNEL_ID = (process.env.LOG_CHANNEL_ID || '').trim(); // optional fallback
 const GUILD_ID = (process.env.GUILD_ID || '').trim();
-const DASHBOARD_URL = process.env.DASHBOARD_URL || 'http://127.0.0.1:5000/';
+const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://loggerbyshavgula.up.railway.app/';
 
 // ===== Settings source (sqlite by default; HTTP recommended on Railway with 2 services) =====
 const USE_HTTP_SETTINGS = process.env.USE_HTTP_SETTINGS === '1';
-const SETTINGS_API_BASE = (process.env.SETTINGS_API_BASE || 'http://127.0.0.1:5000').replace(/\/+$/, '');
+const SETTINGS_API_BASE = (process.env.SETTINGS_API_BASE || 'https://loggerbyshavgula.up.railway.app/').replace(/\/+$/, '');
 const BOT_API_KEY = (process.env.BOT_API_KEY || '').trim();
 
 const SETTINGS_CACHE_MS = Number(process.env.SETTINGS_CACHE_MS || 5000);
