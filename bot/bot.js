@@ -24,15 +24,46 @@ const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://loggerbyshavgula.up.
 
 if (!TOKEN) throw new Error('DISCORD_TOKEN missing in .env');
 
-// ===== Settings source (sqlite by default; optional HTTP) =====
-const USE_HTTP_SETTINGS = process.env.USE_HTTP_SETTINGS === '1';
+// ===== Settings source (HTTP recommended for Railway multi-service; sqlite fallback) =====
 const SETTINGS_API_BASE = process.env.SETTINGS_API_BASE || 'http://127.0.0.1:5000';
 const BOT_API_KEY = process.env.BOT_API_KEY || '';
+// If you run bot + web as separate Railway services, you MUST use HTTP settings:
+//   USE_HTTP_SETTINGS=1
+//   SETTINGS_API_BASE=https://<YOUR-WEB-SERVICE>.up.railway.app
+//   BOT_API_KEY=<same value as web service>
+const USE_HTTP_SETTINGS =
+  process.env.USE_HTTP_SETTINGS === '1'
+  || (Boolean(BOT_API_KEY) && Boolean(process.env.SETTINGS_API_BASE)); // auto-enable if configured
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'web', 'settings.db');
 
 function openDb() {
   return new sqlite3.Database(DB_PATH);
+}
+
+function ensureSchema() {
+  return new Promise((resolve) => {
+    const db = openDb();
+    db.serialize(() => {
+      db.run(`
+        CREATE TABLE IF NOT EXISTS guild_settings (
+          guild_id TEXT PRIMARY KEY,
+          log_channel_id TEXT DEFAULT '',
+          log_join INTEGER DEFAULT 1,
+          log_invites INTEGER DEFAULT 1,
+          log_nickname INTEGER DEFAULT 1,
+          log_roles INTEGER DEFAULT 1,
+          log_message_edit INTEGER DEFAULT 1,
+          log_message_delete INTEGER DEFAULT 1,
+          log_ban INTEGER DEFAULT 1,
+          log_kick INTEGER DEFAULT 1,
+          log_timeout INTEGER DEFAULT 1
+        )
+      `, () => {
+        db.close(() => resolve());
+      });
+    });
+  });
 }
 
 function ensureGuildRow(guildId) {
@@ -50,44 +81,44 @@ function ensureGuildRow(guildId) {
   });
 }
 
+// Simple cache to avoid hitting the web service for every single event
+const settingsCache = new Map(); // guildId -> { ts, data }
+const SETTINGS_CACHE_MS = Number(process.env.SETTINGS_CACHE_MS || 10_000);
+
 async function getSettings(guildId) {
+  const gid = String(guildId);
+
+  const cached = settingsCache.get(gid);
+  if (cached && (Date.now() - cached.ts) < SETTINGS_CACHE_MS) return cached.data;
+
   if (USE_HTTP_SETTINGS) {
     if (!BOT_API_KEY) return null;
-    const r = await fetch(`${SETTINGS_API_BASE}/api/settings/${encodeURIComponent(guildId)}`, {
+
+    const r = await fetch(`${SETTINGS_API_BASE}/api/settings/${encodeURIComponent(gid)}`, {
       headers: { 'X-API-KEY': BOT_API_KEY }
     }).catch((e) => {
       console.log('[getSettings][HTTP] fetch failed:', e?.message || e);
       return null;
     });
-    if (!r || r.status !== 200) return null;
-    return await r.json().catch(() => null);
-  }
-  return await ensureGuildRow(guildId);
-}
 
+    if (!r || r.status !== 200) {
+      const txt = r ? await r.text().catch(() => '') : '';
+      console.log('[getSettings][HTTP] non-200:', r?.status, txt.slice(0, 200));
+      settingsCache.set(gid, { ts: Date.now(), data: null });
+      return null;
+    }
 
-
-// ===== Settings helpers =====
-// SQLite may return 0/1 as numbers or strings ("0"/"1"). JS treats "0" as truthy,
-// so we must normalize to a real boolean.
-function isEnabled(settings, key, def = 1) {
-  const v = settings?.[key];
-
-  if (v === undefined || v === null || v === '') return def === 1;
-
-  if (typeof v === 'boolean') return v;
-  if (typeof v === 'number') return v === 1;
-  if (typeof v === 'bigint') return v === 1n;
-
-  if (typeof v === 'string') {
-    const s = v.trim().toLowerCase();
-    if (s === '') return def === 1;
-    return s === '1' || s === 'true' || s === 'yes' || s === 'on';
+    const data = await r.json().catch(() => null);
+    settingsCache.set(gid, { ts: Date.now(), data });
+    return data;
   }
 
-  return Boolean(v);
+  // sqlite fallback (only works if bot can read the same DB file)
+  await ensureSchema().catch(() => {});
+  const row = await ensureGuildRow(gid);
+  settingsCache.set(gid, { ts: Date.now(), data: row });
+  return row;
 }
-
 // ===== Discord client =====
 const client = new Client({
   intents: [
@@ -219,6 +250,8 @@ client.on('interactionCreate', async (interaction) => {
 
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag} (id: ${client.user.id})`);
+
+  console.log(`Settings mode: ${USE_HTTP_SETTINGS ? 'HTTP' : 'SQLite'} (SETTINGS_API_BASE='${SETTINGS_API_BASE}', cache=${SETTINGS_CACHE_MS}ms)`);
 
   for (const g of client.guilds.cache.values()) await refreshInvitesForGuild(g);
 
