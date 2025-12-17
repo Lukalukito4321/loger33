@@ -25,7 +25,9 @@ const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://loggerbyshavgula.up.
 if (!TOKEN) throw new Error('DISCORD_TOKEN missing in .env');
 
 // ===== Settings source (HTTP recommended for Railway multi-service; sqlite fallback) =====
-const SETTINGS_API_BASE = process.env.SETTINGS_API_BASE || 'http://127.0.0.1:5000';
+
+SETTINGS_API_BASE=https://loggerbyshavgula.up.railway.app
+
 const BOT_API_KEY = process.env.BOT_API_KEY || '';
 // If you run bot + web as separate Railway services, you MUST use HTTP settings:
 //   USE_HTTP_SETTINGS=1
